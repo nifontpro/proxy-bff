@@ -43,18 +43,44 @@ class BFFController @Autowired constructor(
 
 	// просто перенаправляет запрос в Resource Server и добавляет в него access token
 	@GetMapping("/data")
-	fun data(@CookieValue("AT") accessToken: String?): ResponseEntity<String> {
+	fun data(
+		@CookieValue("AT") accessToken: String?,
+		@CookieValue("RT") refreshToken: String?
+	): ResponseEntity<String> {
+		if (accessToken.isNullOrBlank()) return ResponseEntity.ok("AT not found")
+		println("--- AT: $accessToken")
 
 		// обязательно нужно добавить заголовок авторизации с access token
+		val response = getDataWithAT(accessToken)
+		if (response.statusCode == HttpStatus.FORBIDDEN) {
+			if (refreshToken.isNullOrBlank()) return ResponseEntity.ok("RT not found, logout")
+			println("--- RT: $refreshToken")
+			println("--- Get New RT !!!")
+			val refreshResponse = refresh(refreshToken)
+			val newAccessToken = refreshResponse.body?.access_token
+			println("--- RT Body: $refreshResponse")
+			return if (newAccessToken != null) {
+				val responseHeaders = createCookiesData(refreshResponse)
+				val res = getDataWithAT(newAccessToken)
+				val body = res.body
+				return ResponseEntity(body, responseHeaders, HttpStatus.OK)
+			} else {
+				ResponseEntity.ok("RT timeout, logout")
+			}
+		} else {
+			return response
+		}
+	}
+
+	private fun getDataWithAT(accessToken: String): ResponseEntity<String> {
 		val headers = HttpHeaders()
-		headers.setBearerAuth(accessToken!!) // слово Bearer будет добавлено автоматически
-		val request =
-			HttpEntity<MultiValueMap<String, String>>(headers)
+		headers.setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
+		val request = HttpEntity<MultiValueMap<String, String>>(headers)
 		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, String::class.java)
 	}
 
 	// получение новых токенов на основе старого RefreshToken
-	@GetMapping("/newaccesstoken")
+	@GetMapping("/refresh")
 	fun newAccessToken(@CookieValue("RT") oldRefreshToken: String?): ResponseEntity<String> {
 		val headers = HttpHeaders()
 		headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
@@ -87,6 +113,27 @@ class BFFController @Autowired constructor(
 
 		// если ранее где-то возникла ошибка, то код переместится сюда, поэтому возвращаем статус с ошибкой
 		return ResponseEntity.badRequest().build()
+	}
+
+	// получение новых токенов на основе старого RefreshToken
+	fun refresh(oldRefreshToken: String): ResponseEntity<AuthResponse> {
+		val urlEncodedHeaders = HttpHeaders().apply {
+			contentType = MediaType.APPLICATION_FORM_URLENCODED
+		}
+
+		// параметры запроса
+		val mapForm: MultiValueMap<String, String> = LinkedMultiValueMap()
+		mapForm.add("grant_type", grantTypeRefresh)
+		mapForm.add("client_id", clientId)
+		mapForm.add("client_secret", clientSecret)
+		mapForm.add("refresh_token", oldRefreshToken)
+
+		// собираем запрос для выполнения
+		val request = HttpEntity(mapForm, urlEncodedHeaders)
+
+		// выполняем запрос (можно применять разные методы, не только exchange)
+
+		return restTemplate.exchange("$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java)
 	}
 
 	// удаление сессий пользователя внутри KeyCloak и также зануление всех куков
@@ -153,7 +200,7 @@ class BFFController @Autowired constructor(
 		// Клиент получает ответ в объекте ResponseEntity
 		// НО! Значение все равно передавать нужно, без этого grant type не сработает и будет ошибка.
 		// Значение обязательно должно быть с адресом и портом клиента, например https://localhost:8080  иначе будет ошибка Incorrect redirect_uri, потому что изначально запрос на авторизацию выполнялся именно с адреса клиента
-		mapForm.add("redirect_uri", "$clientURL/redirect")
+		mapForm.add("redirect_uri", "$clientURL/login/redirect")
 
 		// добавляем в запрос заголовки и параметры
 		val request = HttpEntity(mapForm, headers)
@@ -195,16 +242,44 @@ class BFFController @Autowired constructor(
 
 		// Сроки действия для токенов берем также из JSON
 		// Куки станут неактивные в то же время, как выйдет срок действия токенов в KeyCloak
-		val accessTokenDuration = root["expires_in"].asInt()
-		val refreshTokenDuration = root["refresh_expires_in"].asInt()
+		val accessTokenDuration = root["expires_in"].asLong()
+		val refreshTokenDuration = root["refresh_expires_in"].asLong()
 
 		// создаем куки, которые браузер будет отправлять автоматически на BFF при каждом запросе
-		val accessTokenCookie = cookieUtils.createCookie(ACCESSTOKEN_COOKIE_KEY, accessToken, accessTokenDuration)
-		val refreshTokenCookie = cookieUtils.createCookie(REFRESHTOKEN_COOKIE_KEY, refreshToken, refreshTokenDuration)
+		val accessTokenCookie = cookieUtils.createCookie(ACCESS_TOKEN_COOKIE_KEY, accessToken, accessTokenDuration)
+		val refreshTokenCookie = cookieUtils.createCookie(REFRESH_TOKEN_COOKIE_KEY, refreshToken, refreshTokenDuration)
 		val idTokenCookie =
-			cookieUtils.createCookie(IDTOKEN_COOKIE_KEY, idToken, accessTokenDuration) // задаем такой же срок, что и AT
+			cookieUtils.createCookie(ID_TOKEN_COOKIE_KEY, idToken, accessTokenDuration) // задаем такой же срок, что и AT
 
-		// чтобы браузер применил куки к бразуеру - указываем их в заголовке Set-Cookie в response
+		// чтобы браузер применил куки к браузеру - указываем их в заголовке Set-Cookie в response
+		val responseHeaders = HttpHeaders()
+		responseHeaders.add(HttpHeaders.SET_COOKIE, accessTokenCookie.toString())
+		responseHeaders.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
+		responseHeaders.add(HttpHeaders.SET_COOKIE, idTokenCookie.toString())
+		return responseHeaders
+	}
+
+	private fun createCookiesData(response: ResponseEntity<AuthResponse>): HttpHeaders {
+
+		val body = response.body ?: return HttpHeaders()
+
+		// получаем значения токенов из корневого элемента JSON
+		val accessToken = body.access_token
+		val idToken = body.id_token
+		val refreshToken = body.refresh_token
+
+		// Сроки действия для токенов берем также из JSON
+		// Куки станут неактивные в то же время, как выйдет срок действия токенов в KeyCloak
+		val accessTokenDuration = body.expires_in
+		val refreshTokenDuration = body.refresh_expires_in
+
+		// создаем куки, которые браузер будет отправлять автоматически на BFF при каждом запросе
+		val accessTokenCookie = cookieUtils.createCookie(ACCESS_TOKEN_COOKIE_KEY, accessToken, accessTokenDuration)
+		val refreshTokenCookie = cookieUtils.createCookie(REFRESH_TOKEN_COOKIE_KEY, refreshToken, refreshTokenDuration)
+		val idTokenCookie =
+			cookieUtils.createCookie(ID_TOKEN_COOKIE_KEY, idToken, accessTokenDuration) // задаем такой же срок, что и AT
+
+		// чтобы браузер применил куки к браузеру - указываем их в заголовке Set-Cookie в response
 		val responseHeaders = HttpHeaders()
 		responseHeaders.add(HttpHeaders.SET_COOKIE, accessTokenCookie.toString())
 		responseHeaders.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
@@ -215,9 +290,9 @@ class BFFController @Autowired constructor(
 	// зануляет все куки, чтобы браузер их удалил у себя
 	private fun clearCookies(): HttpHeaders {
 		// зануляем куки, которые отправляем обратно клиенту в response, тогда браузер автоматически удалит их
-		val accessTokenCookie = cookieUtils.deleteCookie(ACCESSTOKEN_COOKIE_KEY)
-		val refreshTokenCookie = cookieUtils.deleteCookie(REFRESHTOKEN_COOKIE_KEY)
-		val idTokenCookie = cookieUtils.deleteCookie(IDTOKEN_COOKIE_KEY)
+		val accessTokenCookie = cookieUtils.deleteCookie(ACCESS_TOKEN_COOKIE_KEY)
+		val refreshTokenCookie = cookieUtils.deleteCookie(REFRESH_TOKEN_COOKIE_KEY)
+		val idTokenCookie = cookieUtils.deleteCookie(ID_TOKEN_COOKIE_KEY)
 
 		// чтобы браузер применил куки к бразуеру - указываем их в заголовке Set-Cookie в response
 		val responseHeaders = HttpHeaders()
@@ -230,8 +305,8 @@ class BFFController @Autowired constructor(
 	companion object {
 		// можно также использовать WebClient вместо RestTemplate, если нужны асинхронные запросы
 		private val restTemplate = RestTemplate() // для выполнения веб запросов на KeyCloak
-		const val IDTOKEN_COOKIE_KEY = "IT"
-		const val REFRESHTOKEN_COOKIE_KEY = "RT"
-		const val ACCESSTOKEN_COOKIE_KEY = "AT"
+		const val ID_TOKEN_COOKIE_KEY = "IT"
+		const val REFRESH_TOKEN_COOKIE_KEY = "RT"
+		const val ACCESS_TOKEN_COOKIE_KEY = "AT"
 	}
 }

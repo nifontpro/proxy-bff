@@ -23,10 +23,10 @@ class CookieUtils(
 ) {
 
 	// создает server-side cookie со значением jwt. Важно: этот кук сможет считывать только сервер, клиент не сможет с помощью JS или другого клиентского кода (сделано для безопасности)
-	fun createCookie(name: String, value: String, durationInSeconds: Int): HttpCookie { // jwt - значение для кука
+	fun createCookie(name: String, value: String, durationInSeconds: Long): HttpCookie { // jwt - значение для кука
 		return ResponseCookie // настройки кука
 			.from(name, value) // название и значение кука
-			.maxAge(durationInSeconds.toLong()) // 86400 сек = 1 сутки
+			.maxAge(durationInSeconds) // 86400 сек = 1 сутки
 			.sameSite(SameSiteCookies.STRICT.value) // запрет на отправку кука на сервер, если выполняется межсайтовый запрос (доп. защита от CSRF атак) - кук будет отправляться только если пользователь сам набрал URL в адресной строке
 			.httpOnly(true) // кук будет доступен для считывания только на сервере (на клиенте НЕ будет доступен с помощью JavaScript - тем самым защищаемся от XSS атак)
 			//                .secure(true) // кук будет передаваться браузером на backend только если канал будет защищен (https)
