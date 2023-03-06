@@ -14,7 +14,6 @@ import ru.nb.medalist.proxybff.utils.CookieUtils
 
 @RestController
 @RequestMapping("/bff") // базовый URI
-
 class BFFController @Autowired constructor(
 	// класс-утилита для работы с куками
 	private val cookieUtils: CookieUtils,
@@ -45,38 +44,42 @@ class BFFController @Autowired constructor(
 	@GetMapping("/data")
 	fun data(
 		@CookieValue("AT") accessToken: String?,
-		@CookieValue("RT") refreshToken: String?
-	): ResponseEntity<String> {
-		if (accessToken.isNullOrBlank()) return ResponseEntity.ok("AT not found")
+		@CookieValue("RT") refreshToken: String?,
+//		@RequestBody body: RS
+	): ResponseEntity<RS> {
 		println("--- AT: $accessToken")
+		println("--- RT: $refreshToken")
+
+		val body = RS(res = "Test response data")
 
 		// обязательно нужно добавить заголовок авторизации с access token
-		val response = getDataWithAT(accessToken)
-		if (response.statusCode == HttpStatus.FORBIDDEN) {
-			if (refreshToken.isNullOrBlank()) return ResponseEntity.ok("RT not found, logout")
-			println("--- RT: $refreshToken")
-			println("--- Get New RT !!!")
+		val response = accessToken?.let {
+			getDataWithAT(it)
+		}
+
+		if (response == null || response.statusCode == HttpStatus.FORBIDDEN) {
+			if (refreshToken.isNullOrBlank()) return ResponseEntity(RS("RT not found, logout"), HttpStatus.FORBIDDEN)
+			println("--- Get new RT from keycloak")
 			val refreshResponse = refresh(refreshToken)
 			val newAccessToken = refreshResponse.body?.access_token
-			println("--- RT Body: $refreshResponse")
 			return if (newAccessToken != null) {
 				val responseHeaders = createCookiesData(refreshResponse)
 				val res = getDataWithAT(newAccessToken)
 				val body = res.body
 				return ResponseEntity(body, responseHeaders, HttpStatus.OK)
 			} else {
-				ResponseEntity.ok("RT timeout, logout")
+				ResponseEntity(RS("RT timeout, logout"), HttpStatus.FORBIDDEN)
 			}
 		} else {
 			return response
 		}
 	}
 
-	private fun getDataWithAT(accessToken: String): ResponseEntity<String> {
+	private fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
 		val headers = HttpHeaders()
 		headers.setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
 		val request = HttpEntity<MultiValueMap<String, String>>(headers)
-		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, String::class.java)
+		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, RS::class.java)
 	}
 
 	// получение новых токенов на основе старого RefreshToken
@@ -205,24 +208,16 @@ class BFFController @Autowired constructor(
 		// добавляем в запрос заголовки и параметры
 		val request = HttpEntity(mapForm, headers)
 
-		// выполняем запрос
 		val response = restTemplate.exchange(
-			"$keyCloakURI/token", HttpMethod.POST, request, String::class.java
+			"$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java
 		)
-		// мы получаем JSON в виде текста
-		try {
-
-			// считать данные из JSON и записать в куки
-			val responseHeaders = createCookies(response)
-
-			// отправляем клиенту данные пользователя (и jwt-кук в заголовке Set-Cookie)
-			return ResponseEntity.ok().headers(responseHeaders).build()
+		return try {
+			val responseHeaders = createCookiesData(response)
+			ResponseEntity.ok().headers(responseHeaders).build()
 		} catch (e: JsonProcessingException) {
 			e.printStackTrace()
+			ResponseEntity.badRequest().build()
 		}
-
-		// если ранее где-то возникла ошибка, то код переместится сюда, поэтому возвращаем статус с ошибкой
-		return ResponseEntity.badRequest().build()
 	}
 
 	// создание куков для response
@@ -310,3 +305,7 @@ class BFFController @Autowired constructor(
 		const val ACCESS_TOKEN_COOKIE_KEY = "AT"
 	}
 }
+
+data class RS(
+	val res: String
+)

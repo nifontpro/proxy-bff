@@ -7,7 +7,6 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerA
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import org.springframework.security.config.http.SessionCreationPolicy
@@ -49,12 +48,13 @@ class SpringSecurityConfig {
 		return http.build()
 	}
 
-	// все эти настройки обязательны для корректного сохранения куков в браузере
+	//	 все эти настройки обязательны для корректного сохранения куков в браузере
 	@Bean
 	fun corsConfigurationSource(): CorsConfigurationSource {
 		val configuration = CorsConfiguration()
 		configuration.allowCredentials = true // без этого куки могут не сохраняться
 		configuration.allowedOrigins = listOf(clientURL)
+//		configuration.allowedOrigins = listOf("*")
 		configuration.allowedHeaders = mutableListOf("*")
 		configuration.allowedMethods = mutableListOf("*")
 		val source = UrlBasedCorsConfigurationSource()
