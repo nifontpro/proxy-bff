@@ -11,7 +11,6 @@ import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.client.RestTemplate
 import org.springframework.web.reactive.function.client.WebClientResponseException
-import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.util.UriComponentsBuilder
 import ru.nb.medalist.proxybff.utils.CookieUtils
 import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
@@ -42,35 +41,50 @@ class BFFController(
 	private val grantTypeRefresh: String,
 ) {
 
-	// просто перенаправляет запрос в Resource Server и добавляет в него access token
 	@GetMapping("/data")
 	suspend fun data(
 		@CookieValue("AT") accessToken: String?,
 		@CookieValue("RT") refreshToken: String?,
 //		@RequestBody body: RS
 	): ResponseEntity<RS> {
-		/*println("--- AT: $accessToken")
-		println("--- RT: $refreshToken")*/
+		val uri = "/user/data"
+		return requestToResource(uri, accessToken, refreshToken)
+	}
 
+	@GetMapping("/admin_data")
+	suspend fun adminData(
+		@CookieValue("AT") accessToken: String?,
+		@CookieValue("RT") refreshToken: String?,
+//		@RequestBody body: RS
+	): ResponseEntity<RS> {
+		val uri = "/admin/data"
+		return requestToResource(uri, accessToken, refreshToken)
+	}
+
+	suspend fun requestToResource(
+		uri: String,
+		accessToken: String?,
+		refreshToken: String?
+	): ResponseEntity<RS> {
 		val response = accessToken?.let {
-			getDataWithAT(it)
+			getDataWithAT(uri, it)
 		}
 
 		println("--- Response Status code: ${response?.statusCode}")
 
-		if (response == null || response.statusCode == HttpStatus.FORBIDDEN) {
-			if (refreshToken.isNullOrBlank()) return ResponseEntity(RS("RT not found, logout"), HttpStatus.FORBIDDEN)
+		if (response == null || response.statusCode == HttpStatus.UNAUTHORIZED) {
+			if (refreshToken.isNullOrBlank()) return ResponseEntity(RS("RT not found, logout"), HttpStatus.PROXY_AUTHENTICATION_REQUIRED)
 			println("--- Get new RT from keycloak")
 			val refreshResponse = refresh(refreshToken)
 			val newAccessToken = refreshResponse.body?.access_token
 			return if (newAccessToken != null) {
 				val responseHeaders = createCookiesData(refreshResponse)
-				val res = getDataWithAT(newAccessToken)
+				val res = getDataWithAT(uri, newAccessToken)
 				if (res.statusCode != HttpStatus.OK) return ResponseEntity(RS("RS Error"), HttpStatus.INTERNAL_SERVER_ERROR)
 				val body = res.body
 				ResponseEntity(body, responseHeaders, HttpStatus.OK)
 			} else {
-				ResponseEntity(RS("RT timeout, logout"), HttpStatus.FORBIDDEN)
+				ResponseEntity(RS("RT timeout, logout"), HttpStatus.PROXY_AUTHENTICATION_REQUIRED)
 			}
 		} else {
 			println("Response OK from RS")
@@ -78,21 +92,10 @@ class BFFController(
 		}
 	}
 
-//	suspend fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
-//		val headers = HttpHeaders()
-//		headers.setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
-//		val request = HttpEntity<MultiValueMap<String, String>>(headers)
-//		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, RS::class.java)
-//	}
-
-	suspend fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
+	suspend fun getDataWithAT(uri: String, accessToken: String): ResponseEntity<RS> {
 		return try {
-			val res = webClient.getTestData(body = RS(res = "Test body"), token = accessToken)
+			val res = webClient.getTestData(uri = uri, body = RS(res = "Test body"), token = accessToken)
 			ResponseEntity.ok(res)
-		} catch (e: ResponseStatusException) {
-			println(e.message)
-			println("---Status code: ${e.statusCode}")
-			ResponseEntity(RS("Internal error in Resource server"), e.statusCode)
 		} catch (e: WebClientResponseException) {
 			println(e.message)
 			println("---Status code WCE: ${e.statusCode}")
@@ -165,6 +168,7 @@ class BFFController(
 	@GetMapping("/logout")
 	suspend fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
 
+		if (idToken.isNullOrBlank()) return ResponseEntity.badRequest().build()
 		// 1. закрыть сессии в KeyCloak для данного пользователя
 		// 2. занулить куки в браузере
 
@@ -177,7 +181,7 @@ class BFFController(
 			.toUriString()
 
 		// конкретные значения, которые будут подставлены в параметры GET запроса
-		val params: MutableMap<String, String?> = HashMap()
+		val params: MutableMap<String, String> = HashMap()
 		params["post_logout_redirect_uri"] =
 			clientURL // может быть любым, т.к. frontend получает ответ от BFF, а не напрямую от Auth Server
 		params["id_token_hint"] = idToken // idToken указывает Auth Server, для кого мы хотим "выйти"
