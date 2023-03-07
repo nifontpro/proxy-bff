@@ -1,6 +1,5 @@
 package ru.nb.medalist.proxybff.utils
 
-import org.apache.tomcat.util.http.SameSiteCookies
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpCookie
 import org.springframework.http.ResponseCookie
@@ -27,7 +26,7 @@ class CookieUtils(
 		return ResponseCookie // настройки кука
 			.from(name, value) // название и значение кука
 			.maxAge(durationInSeconds) // 86400 сек = 1 сутки
-			.sameSite(SameSiteCookies.NONE.value) // запрет на отправку кука на сервер, если выполняется межсайтовый запрос (доп. защита от CSRF атак) - кук будет отправляться только если пользователь сам набрал URL в адресной строке
+			.sameSite("None") // запрет на отправку кука на сервер, если выполняется межсайтовый запрос (доп. защита от CSRF атак) - кук будет отправляться только если пользователь сам набрал URL в адресной строке
 			.httpOnly(true) // кук будет доступен для считывания только на сервере (на клиенте НЕ будет доступен с помощью JavaScript - тем самым защищаемся от XSS атак)
 //			.secure(true) // кук будет передаваться браузером на backend только если канал будет защищен (https)
 			.domain(cookieDomain) // для какого домена действует кук (перед отправкой запроса на backend - браузер "смотрит" на какой домен он отправляется - и если совпадает со значением из кука - тогда прикрепляет кук к запросу)
@@ -46,7 +45,8 @@ class CookieUtils(
 	fun deleteCookie(name: String): HttpCookie {
 		return ResponseCookie.from(name, "") // пустое значение
 			.maxAge(0) // кук с нулевым сроком действия браузер удалит автоматически
-			.sameSite(SameSiteCookies.STRICT.value) // запрет на отправку кука, если запрос пришел со стороннего сайта (доп. защита от CSRF атак) - кук будет отправляться только если пользователь набрал URL в адресной строке
+//			.sameSite(SameSiteCookies.STRICT.value) // запрет на отправку кука, если запрос пришел со стороннего сайта (доп. защита от CSRF атак) - кук будет отправляться только если пользователь набрал URL в адресной строке
+//			.sameSite("Strict") // запрет на отправку кука, если запрос пришел со стороннего сайта (доп. защита от CSRF атак) - кук будет отправляться только если пользователь набрал URL в адресной строке
 			.httpOnly(true) // кук будет доступен для считывания только на сервере (на клиенте НЕ будет доступен с помощью JavaScript - тем самым защищаемся от XSS атак)
 			.secure(true) // кук будет передаваться браузером на backend только если канал будет защищен (https)
 			.domain(cookieDomain)

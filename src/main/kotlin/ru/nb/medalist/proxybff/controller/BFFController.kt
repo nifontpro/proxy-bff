@@ -2,27 +2,29 @@ package ru.nb.medalist.proxybff.controller
 
 import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.springframework.beans.factory.annotation.Autowired
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.*
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.client.RestTemplate
+import org.springframework.web.reactive.function.client.WebClientResponseException
+import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.util.UriComponentsBuilder
 import ru.nb.medalist.proxybff.utils.CookieUtils
+import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
 
 @RestController
 @RequestMapping("/bff") // базовый URI
-class BFFController @Autowired constructor(
+class BFFController(
 	// класс-утилита для работы с куками
 	private val cookieUtils: CookieUtils,
+	private val webClient: UserWebClientBuilder,
 
 	@Value("\${keycloak.secret}")
 	private val clientSecret: String,
-
-	@Value("\${resourceserver.url}")
-	private val resourceServerURL: String,
 
 	@Value("\${keycloak.url}")
 	private val keyCloakURI: String,
@@ -42,20 +44,19 @@ class BFFController @Autowired constructor(
 
 	// просто перенаправляет запрос в Resource Server и добавляет в него access token
 	@GetMapping("/data")
-	fun data(
+	suspend fun data(
 		@CookieValue("AT") accessToken: String?,
 		@CookieValue("RT") refreshToken: String?,
 //		@RequestBody body: RS
 	): ResponseEntity<RS> {
-		println("--- AT: $accessToken")
-		println("--- RT: $refreshToken")
+		/*println("--- AT: $accessToken")
+		println("--- RT: $refreshToken")*/
 
-		val body = RS(res = "Test response data")
-
-		// обязательно нужно добавить заголовок авторизации с access token
 		val response = accessToken?.let {
 			getDataWithAT(it)
 		}
+
+		println("--- Response Status code: ${response?.statusCode}")
 
 		if (response == null || response.statusCode == HttpStatus.FORBIDDEN) {
 			if (refreshToken.isNullOrBlank()) return ResponseEntity(RS("RT not found, logout"), HttpStatus.FORBIDDEN)
@@ -65,26 +66,43 @@ class BFFController @Autowired constructor(
 			return if (newAccessToken != null) {
 				val responseHeaders = createCookiesData(refreshResponse)
 				val res = getDataWithAT(newAccessToken)
+				if (res.statusCode != HttpStatus.OK) return ResponseEntity(RS("RS Error"), HttpStatus.INTERNAL_SERVER_ERROR)
 				val body = res.body
-				return ResponseEntity(body, responseHeaders, HttpStatus.OK)
+				ResponseEntity(body, responseHeaders, HttpStatus.OK)
 			} else {
 				ResponseEntity(RS("RT timeout, logout"), HttpStatus.FORBIDDEN)
 			}
 		} else {
+			println("Response OK from RS")
 			return response
 		}
 	}
 
-	private fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
-		val headers = HttpHeaders()
-		headers.setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
-		val request = HttpEntity<MultiValueMap<String, String>>(headers)
-		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, RS::class.java)
+//	suspend fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
+//		val headers = HttpHeaders()
+//		headers.setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
+//		val request = HttpEntity<MultiValueMap<String, String>>(headers)
+//		return restTemplate.exchange("$resourceServerURL/user/data", HttpMethod.GET, request, RS::class.java)
+//	}
+
+	suspend fun getDataWithAT(accessToken: String): ResponseEntity<RS> {
+		return try {
+			val res = webClient.getTestData(body = RS(res = "Test body"), token = accessToken)
+			ResponseEntity.ok(res)
+		} catch (e: ResponseStatusException) {
+			println(e.message)
+			println("---Status code: ${e.statusCode}")
+			ResponseEntity(RS("Internal error in Resource server"), e.statusCode)
+		} catch (e: WebClientResponseException) {
+			println(e.message)
+			println("---Status code WCE: ${e.statusCode}")
+			ResponseEntity(RS("Internal error in Resource server"), e.statusCode)
+		}
 	}
 
 	// получение новых токенов на основе старого RefreshToken
 	@GetMapping("/refresh")
-	fun newAccessToken(@CookieValue("RT") oldRefreshToken: String?): ResponseEntity<String> {
+	suspend fun newAccessToken(@CookieValue("RT") oldRefreshToken: String?): ResponseEntity<String> {
 		val headers = HttpHeaders()
 		headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
 
@@ -99,9 +117,11 @@ class BFFController @Autowired constructor(
 		val request = HttpEntity(mapForm, headers)
 
 		// выполняем запрос (можно применять разные методы, не только exchange)
-		val response = restTemplate.exchange(
-			"$keyCloakURI/token", HttpMethod.POST, request, String::class.java
-		)
+		val response = withContext(Dispatchers.IO) {
+			restTemplate.exchange(
+				"$keyCloakURI/token", HttpMethod.POST, request, String::class.java
+			)
+		}
 		try {
 
 			// создаем куки для ответа в браузер
@@ -119,7 +139,7 @@ class BFFController @Autowired constructor(
 	}
 
 	// получение новых токенов на основе старого RefreshToken
-	fun refresh(oldRefreshToken: String): ResponseEntity<AuthResponse> {
+	suspend fun refresh(oldRefreshToken: String): ResponseEntity<AuthResponse> {
 		val urlEncodedHeaders = HttpHeaders().apply {
 			contentType = MediaType.APPLICATION_FORM_URLENCODED
 		}
@@ -136,12 +156,14 @@ class BFFController @Autowired constructor(
 
 		// выполняем запрос (можно применять разные методы, не только exchange)
 
-		return restTemplate.exchange("$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java)
+		return withContext(Dispatchers.IO) {
+			restTemplate.exchange("$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java)
+		}
 	}
 
 	// удаление сессий пользователя внутри KeyCloak и также зануление всех куков
 	@GetMapping("/logout")
-	fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
+	suspend fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
 
 		// 1. закрыть сессии в KeyCloak для данного пользователя
 		// 2. занулить куки в браузере
@@ -162,11 +184,13 @@ class BFFController @Autowired constructor(
 		params["client_id"] = clientId
 
 		// выполняем запрос
-		val response = restTemplate.getForEntity(
-			urlTemplate,  // шаблон GET запроса
-			String::class.java,  // нам ничего не возвращается в ответе, только статус, поэтому можно указать String
-			params // какие значения будут подставлены в шаблон GET запроса
-		)
+		val response = withContext(Dispatchers.IO) {
+			restTemplate.getForEntity(
+				urlTemplate,  // шаблон GET запроса
+				String::class.java,  // нам ничего не возвращается в ответе, только статус, поэтому можно указать String
+				params // какие значения будут подставлены в шаблон GET запроса
+			)
+		}
 
 
 		// если KeyCloak вернул 200-ОК, значит сессии пользователя успешно закрыты и можно обнулять куки
@@ -185,7 +209,7 @@ class BFFController @Autowired constructor(
 	// но сами токены сохраняться в браузере не будут, а только будут передаваться в куках
 	// таким образом к ним не будет доступа из кода браузера (защита от XSS атак)
 	@PostMapping("/token")
-	fun token(@RequestBody code: String): ResponseEntity<String> { // получаем auth code, чтобы обменять его на токены
+	suspend fun token(@RequestBody code: String): ResponseEntity<String> { // получаем auth code, чтобы обменять его на токены
 
 		// 1. обменять auth code на токены
 		// 2. сохранить токены в защищенные куки
@@ -208,9 +232,11 @@ class BFFController @Autowired constructor(
 		// добавляем в запрос заголовки и параметры
 		val request = HttpEntity(mapForm, headers)
 
-		val response = restTemplate.exchange(
-			"$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java
-		)
+		val response = withContext(Dispatchers.IO) {
+			restTemplate.exchange(
+				"$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java
+			)
+		}
 		return try {
 			val responseHeaders = createCookiesData(response)
 			ResponseEntity.ok().headers(responseHeaders).build()
