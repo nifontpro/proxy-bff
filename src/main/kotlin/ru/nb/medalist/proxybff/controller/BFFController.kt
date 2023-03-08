@@ -1,16 +1,20 @@
 package ru.nb.medalist.proxybff.controller
 
 import com.fasterxml.jackson.core.JsonProcessingException
-import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import mu.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.*
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.client.RestTemplate
+import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.WebClientResponseException
+import org.springframework.web.reactive.function.client.awaitBodilessEntity
+import org.springframework.web.reactive.function.client.awaitBody
 import org.springframework.web.util.UriComponentsBuilder
 import ru.nb.medalist.proxybff.utils.CookieUtils
 import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
@@ -41,12 +45,14 @@ class BFFController(
 	private val grantTypeRefresh: String,
 ) {
 
+	private val keycloakClient = WebClient.create(keyCloakURI)
+
 	@GetMapping("/data")
 	suspend fun data(
 		@CookieValue("AT") accessToken: String?,
 		@CookieValue("RT") refreshToken: String?,
 //		@RequestBody body: RS
-	): ResponseEntity<RS> {
+	): ResponseEntity<Any> {
 		val uri = "/user/data"
 		return requestToResource(uri, accessToken, refreshToken)
 	}
@@ -56,7 +62,7 @@ class BFFController(
 		@CookieValue("AT") accessToken: String?,
 		@CookieValue("RT") refreshToken: String?,
 //		@RequestBody body: RS
-	): ResponseEntity<RS> {
+	): ResponseEntity<Any> {
 		val uri = "/admin/data"
 		return requestToResource(uri, accessToken, refreshToken)
 	}
@@ -65,84 +71,58 @@ class BFFController(
 		uri: String,
 		accessToken: String?,
 		refreshToken: String?
-	): ResponseEntity<RS> {
+	): ResponseEntity<Any> {
+
+		accessToken?.let {
+			log.info { "> Access token present" }
+		}
+
+		refreshToken?.let {
+			log.info { "> Refresh token present" }
+		}
+
+
 		val response = accessToken?.let {
 			getDataWithAT(uri, it)
 		}
 
-		println("--- Response Status code: ${response?.statusCode}")
-
 		if (response == null || response.statusCode == HttpStatus.UNAUTHORIZED) {
-			if (refreshToken.isNullOrBlank()) return ResponseEntity(RS("RT not found, logout"), HttpStatus.PROXY_AUTHENTICATION_REQUIRED)
-			println("--- Get new RT from keycloak")
+			if (refreshToken.isNullOrBlank()) return ResponseEntity(
+				RS("RT not found, logout"),
+				HttpStatus.PROXY_AUTHENTICATION_REQUIRED
+			)
+			log.info { "> Get new Auth Data (refresh)" }
 			val refreshResponse = refresh(refreshToken)
 			val newAccessToken = refreshResponse.body?.access_token
+			log.info { "New AT: ${refreshResponse.body?.access_token}" }
 			return if (newAccessToken != null) {
-				val responseHeaders = createCookiesData(refreshResponse)
+				val responseHeaders = createCookies(refreshResponse)
+				delay(5) // Небольшая задержка, чтоб AT вступил в силу
 				val res = getDataWithAT(uri, newAccessToken)
-				if (res.statusCode != HttpStatus.OK) return ResponseEntity(RS("RS Error"), HttpStatus.INTERNAL_SERVER_ERROR)
+				log.info { "Already GET Data from RS, body: ${res.body}" }
 				val body = res.body
-				ResponseEntity(body, responseHeaders, HttpStatus.OK)
+				ResponseEntity(body, responseHeaders, res.statusCode)
 			} else {
 				ResponseEntity(RS("RT timeout, logout"), HttpStatus.PROXY_AUTHENTICATION_REQUIRED)
 			}
 		} else {
-			println("Response OK from RS")
 			return response
 		}
 	}
 
-	suspend fun getDataWithAT(uri: String, accessToken: String): ResponseEntity<RS> {
+	suspend fun getDataWithAT(uri: String, accessToken: String): ResponseEntity<Any> {
 		return try {
-			val res = webClient.getTestData(uri = uri, body = RS(res = "Test body"), token = accessToken)
+			val res = webClient.getUserData(uri = uri, body = RS(res = "Test body"), token = accessToken)
 			ResponseEntity.ok(res)
 		} catch (e: WebClientResponseException) {
-			println(e.message)
-			println("---Status code WCE: ${e.statusCode}")
-			ResponseEntity(RS("Internal error in Resource server"), e.statusCode)
+			log.error { e.message }
+			ResponseEntity(RS(e.message ?: "RS error"), e.statusCode)
 		}
-	}
-
-	// получение новых токенов на основе старого RefreshToken
-	@GetMapping("/refresh")
-	suspend fun newAccessToken(@CookieValue("RT") oldRefreshToken: String?): ResponseEntity<String> {
-		val headers = HttpHeaders()
-		headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
-
-		// параметры запроса
-		val mapForm: MultiValueMap<String, String> = LinkedMultiValueMap()
-		mapForm.add("grant_type", grantTypeRefresh)
-		mapForm.add("client_id", clientId)
-		mapForm.add("client_secret", clientSecret)
-		mapForm.add("refresh_token", oldRefreshToken)
-
-		// собираем запрос для выполнения
-		val request = HttpEntity(mapForm, headers)
-
-		// выполняем запрос (можно применять разные методы, не только exchange)
-		val response = withContext(Dispatchers.IO) {
-			restTemplate.exchange(
-				"$keyCloakURI/token", HttpMethod.POST, request, String::class.java
-			)
-		}
-		try {
-
-			// создаем куки для ответа в браузер
-			val responseHeaders = createCookies(response)
-
-			// отправляем клиенту ответ со всеми куками (которые запишутся в браузер автоматически)
-			// значения куков с новыми токенами перезапишутся в браузер
-			return ResponseEntity.ok().headers(responseHeaders).build()
-		} catch (e: JsonProcessingException) {
-			e.printStackTrace()
-		}
-
-		// если ранее где-то возникла ошибка, то код переместится сюда, поэтому возвращаем статус с ошибкой
-		return ResponseEntity.badRequest().build()
 	}
 
 	// получение новых токенов на основе старого RefreshToken
 	suspend fun refresh(oldRefreshToken: String): ResponseEntity<AuthResponse> {
+
 		val urlEncodedHeaders = HttpHeaders().apply {
 			contentType = MediaType.APPLICATION_FORM_URLENCODED
 		}
@@ -155,17 +135,18 @@ class BFFController(
 		mapForm.add("refresh_token", oldRefreshToken)
 
 		// собираем запрос для выполнения
-		val request = HttpEntity(mapForm, urlEncodedHeaders)
+//		val request = HttpEntity(mapForm, urlEncodedHeaders)
 
-		// выполняем запрос (можно применять разные методы, не только exchange)
+		val authResponse = postKeycloakRequest(uri = "/token", body = mapForm, headers = urlEncodedHeaders)
+		return ResponseEntity.ok(authResponse)
 
-		return withContext(Dispatchers.IO) {
-			restTemplate.exchange("$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java)
-		}
+//		return withContext(Dispatchers.IO) {
+//			restTemplate.exchange("$keyCloakURI/token", HttpMethod.POST, request, AuthResponse::class.java)
+//		}
 	}
 
 	// удаление сессий пользователя внутри KeyCloak и также зануление всех куков
-	@GetMapping("/logout")
+	@GetMapping("/logout_old")
 	suspend fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
 
 		if (idToken.isNullOrBlank()) return ResponseEntity.badRequest().build()
@@ -209,6 +190,38 @@ class BFFController(
 		return ResponseEntity.badRequest().build()
 	}
 
+	// удаление сессий пользователя внутри KeyCloak и также зануление всех куков
+	@GetMapping("/logout")
+	suspend fun newLogout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
+
+		if (idToken.isNullOrBlank()) return ResponseEntity.badRequest().build()
+		// 1. закрыть сессии в KeyCloak для данного пользователя
+		// 2. занулить куки в браузере
+
+		try {
+			keycloakClient
+				.get()
+				.uri {
+					it.path("/logout/")
+						.queryParam("post_logout_redirect_uri", clientURL)
+						.queryParam("id_token_hint", idToken)
+						.queryParam("client_id", clientId)
+						.build()
+				}
+				.retrieve()
+				.awaitBodilessEntity()
+		} catch (e: Exception) {
+			log.error { e.message }
+			return ResponseEntity.badRequest().build()
+		}
+
+		// занулить значения и сроки годности всех куков (тогда браузер их удалит автоматически)
+		val responseHeaders = clearCookies()
+
+		// отправляем клиенту ответ с куками, которые автоматически применятся к браузеру
+		return ResponseEntity.ok().headers(responseHeaders).build()
+	}
+
 	// получение access token от лица клиента
 	// но сами токены сохраняться в браузере не будут, а только будут передаваться в куках
 	// таким образом к ним не будет доступа из кода браузера (защита от XSS атак)
@@ -242,7 +255,7 @@ class BFFController(
 			)
 		}
 		return try {
-			val responseHeaders = createCookiesData(response)
+			val responseHeaders = createCookies(response)
 			ResponseEntity.ok().headers(responseHeaders).build()
 		} catch (e: JsonProcessingException) {
 			e.printStackTrace()
@@ -250,41 +263,7 @@ class BFFController(
 		}
 	}
 
-	// создание куков для response
-	@Throws(JsonProcessingException::class)
-	private fun createCookies(response: ResponseEntity<String>): HttpHeaders {
-
-		// парсер JSON
-		val mapper = ObjectMapper()
-
-		// сначала нужно получить корневой элемент JSON
-		val root = mapper.readTree(response.body)
-
-		// получаем значения токенов из корневого элемента JSON
-		val accessToken = root["access_token"].asText()
-		val idToken = root["id_token"].asText()
-		val refreshToken = root["refresh_token"].asText()
-
-		// Сроки действия для токенов берем также из JSON
-		// Куки станут неактивные в то же время, как выйдет срок действия токенов в KeyCloak
-		val accessTokenDuration = root["expires_in"].asLong()
-		val refreshTokenDuration = root["refresh_expires_in"].asLong()
-
-		// создаем куки, которые браузер будет отправлять автоматически на BFF при каждом запросе
-		val accessTokenCookie = cookieUtils.createCookie(ACCESS_TOKEN_COOKIE_KEY, accessToken, accessTokenDuration)
-		val refreshTokenCookie = cookieUtils.createCookie(REFRESH_TOKEN_COOKIE_KEY, refreshToken, refreshTokenDuration)
-		val idTokenCookie =
-			cookieUtils.createCookie(ID_TOKEN_COOKIE_KEY, idToken, accessTokenDuration) // задаем такой же срок, что и AT
-
-		// чтобы браузер применил куки к браузеру - указываем их в заголовке Set-Cookie в response
-		val responseHeaders = HttpHeaders()
-		responseHeaders.add(HttpHeaders.SET_COOKIE, accessTokenCookie.toString())
-		responseHeaders.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
-		responseHeaders.add(HttpHeaders.SET_COOKIE, idTokenCookie.toString())
-		return responseHeaders
-	}
-
-	private fun createCookiesData(response: ResponseEntity<AuthResponse>): HttpHeaders {
+	private fun createCookies(response: ResponseEntity<AuthResponse>): HttpHeaders {
 
 		val body = response.body ?: return HttpHeaders()
 
@@ -312,19 +291,30 @@ class BFFController(
 		return responseHeaders
 	}
 
-	// зануляет все куки, чтобы браузер их удалил у себя
+	// Обнуляем все куки, чтобы браузер их удалил у себя
 	private fun clearCookies(): HttpHeaders {
-		// зануляем куки, которые отправляем обратно клиенту в response, тогда браузер автоматически удалит их
+		// Обнуляем куки, которые отправляем обратно клиенту в response, тогда браузер автоматически удалит их
 		val accessTokenCookie = cookieUtils.deleteCookie(ACCESS_TOKEN_COOKIE_KEY)
 		val refreshTokenCookie = cookieUtils.deleteCookie(REFRESH_TOKEN_COOKIE_KEY)
 		val idTokenCookie = cookieUtils.deleteCookie(ID_TOKEN_COOKIE_KEY)
 
-		// чтобы браузер применил куки к бразуеру - указываем их в заголовке Set-Cookie в response
+		// чтобы браузер применил куки к браузеру - указываем их в заголовке Set-Cookie в response
 		val responseHeaders = HttpHeaders()
 		responseHeaders.add(HttpHeaders.SET_COOKIE, accessTokenCookie.toString())
 		responseHeaders.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
 		responseHeaders.add(HttpHeaders.SET_COOKIE, idTokenCookie.toString())
 		return responseHeaders
+	}
+
+	suspend fun postKeycloakRequest(uri: String, body: Any, headers: HttpHeaders): AuthResponse {
+
+		return keycloakClient
+			.post()
+			.uri(uri)
+			.bodyValue(body)
+			.headers { it.addAll(headers) }
+			.retrieve()
+			.awaitBody()
 	}
 
 	companion object {
@@ -333,6 +323,8 @@ class BFFController(
 		const val ID_TOKEN_COOKIE_KEY = "IT"
 		const val REFRESH_TOKEN_COOKIE_KEY = "RT"
 		const val ACCESS_TOKEN_COOKIE_KEY = "AT"
+
+		private val log = KotlinLogging.logger {}
 	}
 }
 
