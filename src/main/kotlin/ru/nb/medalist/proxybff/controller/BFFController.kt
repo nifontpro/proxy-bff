@@ -15,7 +15,7 @@ import ru.nb.medalist.proxybff.utils.CookieUtils
 import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
 
 @RestController
-@RequestMapping("/bff") // базовый URI
+@RequestMapping("/bff")
 class BFFController(
 	private val cookieUtils: CookieUtils,
 	private val webClient: UserWebClientBuilder,
@@ -23,9 +23,9 @@ class BFFController(
 	@Value("\${keycloak.secret}") private val clientSecret: String,
 	@Value("\${keycloak.url}") private val keyCloakURI: String,
 	@Value("\${client.url}") private val clientURL: String,
-	@Value("\${keycloak.clientid}") private val clientId: String,
-	@Value("\${keycloak.granttype.code}") private val grantTypeCode: String,
-	@Value("\${keycloak.granttype.refresh}") private val grantTypeRefresh: String,
+	@Value("\${keycloak.client-id}") private val clientId: String,
+	@Value("\${keycloak.grant-type.code}") private val grantTypeCode: String,
+	@Value("\${keycloak.grant-type.refresh}") private val grantTypeRefresh: String,
 ) {
 
 	private val keycloakClient = WebClient.create(keyCloakURI)
@@ -115,7 +115,6 @@ class BFFController(
 		return postKeycloakRequest(uri = "/token", body = mapForm, headers = urlEncodedHeaders)
 	}
 
-
 	/**
 		Получение access token от лица клиента.
 		Сами токены сохраняться в браузере не будут, а только будут передаваться в куках
@@ -149,7 +148,7 @@ class BFFController(
 	}
 
 	/**
-	 * Удаление сессий пользователя внутри KeyCloak и также зануление всех куков
+	 * Удаление сессий пользователя внутри KeyCloak и также обнуление всех куков
 	 */
 	@GetMapping("/logout")
 	suspend fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {

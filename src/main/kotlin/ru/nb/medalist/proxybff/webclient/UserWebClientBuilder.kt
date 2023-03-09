@@ -8,7 +8,7 @@ import org.springframework.web.reactive.function.client.awaitBody
 
 @Component
 class UserWebClientBuilder(
-	@Value("\${resourceserver.url}")
+	@Value("\${resource-server.url}")
 	private val resourceServerURL: String,
 ) {
 
@@ -21,10 +21,9 @@ class UserWebClientBuilder(
 			.post()
 			.uri(uri)
 			.bodyValue(body)
-//			.header("Authorization", "Bearer $accessToken")
 			.headers {
 				it.addAll(HttpHeaders().apply {
-					setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
+					setBearerAuth(accessToken)
 				})
 			}
 			.retrieve()
