@@ -1,6 +1,7 @@
 package ru.nb.medalist.proxybff.webclient
 
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpHeaders
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
@@ -11,14 +12,21 @@ class UserWebClientBuilder(
 	private val resourceServerURL: String,
 ) {
 
-	// https://www.baeldung.com/kotlin/spring-boot-kotlin-coroutines
-	suspend fun getUserData(uri: String, body: Any, token: String): Any {
+	val userClient = WebClient.create(resourceServerURL)
 
-		return WebClient.create(resourceServerURL)
+	// https://www.baeldung.com/kotlin/spring-boot-kotlin-coroutines
+	suspend fun getUserData(uri: String, body: Any, accessToken: String): Any {
+
+		return userClient
 			.post()
 			.uri(uri)
 			.bodyValue(body)
-			.header("Authorization", "Bearer $token")
+//			.header("Authorization", "Bearer $accessToken")
+			.headers {
+				it.addAll(HttpHeaders().apply {
+					setBearerAuth(accessToken) // слово Bearer будет добавлено автоматически
+				})
+			}
 			.retrieve()
 			.awaitBody()
 	}
