@@ -30,6 +30,9 @@ class BFFController(
 
 	private val keycloakClient = WebClient.create(keyCloakURI)
 
+	@GetMapping("test")
+	suspend fun test() = "Test endpoint"
+
 	@PostMapping("/data")
 	suspend fun data(
 		@CookieValue("AT") accessToken: String?,
@@ -123,6 +126,8 @@ class BFFController(
 	@PostMapping("/token")
 	suspend fun token(@RequestBody code: String): ResponseEntity<String> {
 
+		log.info { "> START TOKEN..." }
+
 		// 1. обменять auth code на токены
 		// 2. сохранить токены в защищенные куки
 		val headers = HttpHeaders()
@@ -140,6 +145,7 @@ class BFFController(
 
 		return try {
 			val responseHeaders = cookieUtils.createCookies(authResponse)
+			log.info { "> END TOKEN..." }
 			ResponseEntity.ok().headers(responseHeaders).build()
 		} catch (e: JsonProcessingException) {
 			log.error { e.message }
