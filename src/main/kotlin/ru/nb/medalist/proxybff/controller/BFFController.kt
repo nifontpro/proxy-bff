@@ -20,7 +20,7 @@ class BFFController(
 	private val cookieUtils: CookieUtils,
 	private val webClient: UserWebClientBuilder,
 
-	@Value("\${keycloak.secret}") private val clientSecret: String,
+	@Value("\${keycloak.credentials.secret}") private val clientSecret: String,
 	@Value("\${keycloak.url}") private val keyCloakURI: String,
 	@Value("\${client.url}") private val clientURL: String,
 	@Value("\${keycloak.client-id}") private val clientId: String,
@@ -159,15 +159,16 @@ class BFFController(
 	@GetMapping("/logout")
 	suspend fun logout(@CookieValue("IT") idToken: String?): ResponseEntity<String> {
 
-		if (idToken.isNullOrBlank()) return ResponseEntity.badRequest().build()
+		if (idToken.isNullOrBlank()) {
+			log.error { "> Logout: IT not present" }
+			return ResponseEntity.badRequest().build()
+		}
 
 		keycloakClient
 			.get()
 			.uri {
 				it.path("/logout")
-					.queryParam("post_logout_redirect_uri", clientURL)
 					.queryParam("id_token_hint", idToken)
-					.queryParam("client_id", clientId)
 					.build()
 			}
 			.retrieve()
