@@ -64,6 +64,7 @@ class BFFController(
 			return ResponseEntity(RS("RT not found, logout"), HttpStatus.PROXY_AUTHENTICATION_REQUIRED)
 		} else {
 			log.info { "> Refresh token present" }
+			log.info { refreshToken }
 		}
 
 		accessToken?.let {
@@ -126,7 +127,7 @@ class BFFController(
 	@PostMapping("/token")
 	suspend fun token(@RequestBody code: String): ResponseEntity<String> {
 
-		log.info { "> START TOKEN..." }
+		log.info { "> START: Get tokens after auth, code: $code" }
 
 		// 1. обменять auth code на токены
 		// 2. сохранить токены в защищенные куки
@@ -145,7 +146,7 @@ class BFFController(
 
 		return try {
 			val responseHeaders = cookieUtils.createCookies(authResponse)
-			log.info { "> END TOKEN..." }
+			log.info { "> END: Get tokens after auth: OK." }
 			ResponseEntity.ok().headers(responseHeaders).build()
 		} catch (e: JsonProcessingException) {
 			log.error { e.message }
