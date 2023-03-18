@@ -3,14 +3,16 @@ package ru.nb.medalist.proxybff.controller
 import com.fasterxml.jackson.core.JsonProcessingException
 import mu.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.core.io.buffer.DataBuffer
 import org.springframework.http.*
+import org.springframework.http.client.MultipartBodyBuilder
+import org.springframework.http.codec.multipart.FilePart
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.*
-import org.springframework.web.reactive.function.client.WebClient
-import org.springframework.web.reactive.function.client.WebClientResponseException
-import org.springframework.web.reactive.function.client.awaitBodilessEntity
-import org.springframework.web.reactive.function.client.awaitBody
+import org.springframework.web.reactive.function.BodyInserters
+import org.springframework.web.reactive.function.client.*
+import reactor.core.publisher.Mono
 import ru.nb.medalist.proxybff.utils.CookieUtils
 import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
 
@@ -18,7 +20,7 @@ import ru.nb.medalist.proxybff.webclient.UserWebClientBuilder
 @RequestMapping("/bff")
 class BFFController(
 	private val cookieUtils: CookieUtils,
-	private val webClient: UserWebClientBuilder,
+	private val userClient: UserWebClientBuilder,
 
 	@Value("\${keycloak.credentials.secret}") private val clientSecret: String,
 	@Value("\${keycloak.url}") private val keyCloakURI: String,
@@ -29,6 +31,26 @@ class BFFController(
 ) {
 
 	private val keycloakClient = WebClient.create(keyCloakURI)
+	private val usrClient = WebClient.create("http://localhost:8080")
+
+	@PostMapping(value = ["/up"], consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
+	fun up(@RequestPart("file") filePart: Mono<FilePart>): Mono<String> {
+		return filePart
+			.doOnNext { fp ->
+				println("Received File : " + fp.filename())
+			}
+			.flatMap { fp ->
+				val builder = MultipartBodyBuilder()
+				builder.asyncPart("file", fp.content(), DataBuffer::class.java).filename(fp.filename())
+
+				usrClient.post()
+					.uri("up")
+					.contentType(MediaType.MULTIPART_FORM_DATA)
+					.body(BodyInserters.fromMultipartData(builder.build()))
+					.retrieve()
+					.bodyToMono<String>()
+			}
+	}
 
 	@GetMapping("test")
 	suspend fun test() = "Test endpoint"
@@ -95,7 +117,7 @@ class BFFController(
 
 	suspend fun getDataFromRS(uri: String, accessToken: String, requestBody: RS): ResponseEntity<Any> {
 		return try {
-			val response = webClient.getUserData(uri = uri, body = requestBody, accessToken = accessToken)
+			val response = userClient.getUserData(uri = uri, body = requestBody, accessToken = accessToken)
 			ResponseEntity.ok(response)
 		} catch (e: WebClientResponseException) {
 			log.error { e.message }
@@ -120,9 +142,9 @@ class BFFController(
 	}
 
 	/**
-		Получение access token от лица клиента.
-		Сами токены сохраняться в браузере не будут, а только будут передаваться в куках
-		таким образом к ним не будет доступа из кода браузера (защита от XSS атак)
+	Получение access token от лица клиента.
+	Сами токены сохраняться в браузере не будут, а только будут передаваться в куках
+	таким образом к ним не будет доступа из кода браузера (защита от XSS атак)
 	 */
 	@PostMapping("/token")
 	suspend fun token(@RequestBody code: String): ResponseEntity<String> {
